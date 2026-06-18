@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosRequestConfig } from 'axios';
+import axios, { AxiosError } from 'axios';
 import type { IAdapter, AdapterFetchOptions, ApiSource, SourceResult } from '../types';
 
 export abstract class BaseAdapter implements IAdapter {
