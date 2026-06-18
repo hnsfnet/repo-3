@@ -1,0 +1,207 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import * as yaml from 'js-yaml';
+import type { AppConfig, ApiSource, ApiKeyConfig, ServerConfig } from '../types';
+
+export class ConfigLoader {
+  private static instance: ConfigLoader | null = null;
+  private config: AppConfig;
+
+  private constructor(configPath?: string) {
+    const resolvedPath = configPath ?? this.getDefaultConfigPath();
+    this.config = this.loadConfig(resolvedPath);
+    this.validateConfig(this.config);
+  }
+
+  public static getInstance(configPath?: string): ConfigLoader {
+    if (ConfigLoader.instance === null) {
+      ConfigLoader.instance = new ConfigLoader(configPath);
+    }
+    return ConfigLoader.instance;
+  }
+
+  public static reset(): void {
+    ConfigLoader.instance = null;
+  }
+
+  public getConfig(): AppConfig {
+    return this.config;
+  }
+
+  public getServerConfig(): ServerConfig {
+    return this.config.server;
+  }
+
+  public getApiSources(): ApiSource[] {
+    return this.config.apiSources;
+  }
+
+  public getEnabledApiSources(): ApiSource[] {
+    return this.config.apiSources.filter((s) => s.enabled);
+  }
+
+  public getApiSourceById(id: string): ApiSource | undefined {
+    return this.config.apiSources.find((s) => s.id === id);
+  }
+
+  public getApiKeys(): ApiKeyConfig[] {
+    return this.config.apiKeys;
+  }
+
+  public getApiKeyByKey(key: string): ApiKeyConfig | undefined {
+    return this.config.apiKeys.find((k) => k.key === key);
+  }
+
+  public reload(configPath?: string): void {
+    const resolvedPath = configPath ?? this.getDefaultConfigPath();
+    const newConfig = this.loadConfig(resolvedPath);
+    this.validateConfig(newConfig);
+    this.config = newConfig;
+  }
+
+  private getDefaultConfigPath(): string {
+    const envPath = process.env['JUQIAO_CONFIG_PATH'];
+    if (envPath) {
+      return path.resolve(envPath);
+    }
+    return path.resolve(process.cwd(), 'config', 'app.yaml');
+  }
+
+  private loadConfig(configPath: string): AppConfig {
+    if (!fs.existsSync(configPath)) {
+      throw new Error(`配置文件不存在: ${configPath}`);
+    }
+
+    const fileContent = fs.readFileSync(configPath, 'utf-8');
+    const rawConfig = yaml.load(fileContent) as Record<string, unknown>;
+
+    return this.parseConfig(rawConfig);
+  }
+
+  private parseConfig(raw: Record<string, unknown>): AppConfig {
+    const server = this.parseServerConfig(raw['server'] as Record<string, unknown> | undefined);
+    const apiSources = this.parseApiSources(raw['apiSources'] as unknown[] | undefined);
+    const apiKeys = this.parseApiKeys(raw['apiKeys'] as unknown[] | undefined);
+
+    return { server, apiSources, apiKeys };
+  }
+
+  private parseServerConfig(raw: Record<string, unknown> | undefined): ServerConfig {
+    const port = typeof raw?.['port'] === 'number' ? raw['port'] : 3000;
+    const host = typeof raw?.['host'] === 'string' ? raw['host'] : '0.0.0.0';
+    const requestIdHeader = typeof raw?.['requestIdHeader'] === 'string'
+      ? raw['requestIdHeader']
+      : 'X-Request-Id';
+    const apiKeyHeader = typeof raw?.['apiKeyHeader'] === 'string'
+      ? raw['apiKeyHeader']
+      : 'X-API-Key';
+
+    return { port, host, requestIdHeader, apiKeyHeader };
+  }
+
+  private parseApiSources(raw: unknown[] | undefined): ApiSource[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw.map((item, index) => {
+      const source = item as Record<string, unknown>;
+      const id = typeof source['id'] === 'string' ? source['id'] : `source-${index}`;
+      const name = typeof source['name'] === 'string' ? source['name'] : id;
+      const baseUrl = typeof source['baseUrl'] === 'string' ? source['baseUrl'] : '';
+      const timeoutMs = typeof source['timeoutMs'] === 'number' ? source['timeoutMs'] : 5000;
+      const enabled = typeof source['enabled'] === 'boolean' ? source['enabled'] : true;
+
+      const retryRaw = source['retry'] as Record<string, unknown> | undefined;
+      const retry = {
+        maxRetries: typeof retryRaw?.['maxRetries'] === 'number' ? retryRaw['maxRetries'] : 2,
+        delayMs: typeof retryRaw?.['delayMs'] === 'number' ? retryRaw['delayMs'] : 300,
+      };
+
+      const headers = this.parseRecord(source['headers']);
+      const queryParams = this.parseRecord(source['queryParams']);
+      const endpoint = typeof source['endpoint'] === 'string' ? source['endpoint'] : undefined;
+
+      return { id, name, baseUrl, timeoutMs, retry, headers, queryParams, endpoint, enabled };
+    });
+  }
+
+  private parseApiKeys(raw: unknown[] | undefined): ApiKeyConfig[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw.map((item) => {
+      const keyObj = item as Record<string, unknown>;
+      const key = typeof keyObj['key'] === 'string' ? keyObj['key'] : '';
+      const name = typeof keyObj['name'] === 'string' ? keyObj['name'] : 'Unknown';
+      const allowedApis = Array.isArray(keyObj['allowedApis'])
+        ? (keyObj['allowedApis'] as string[]).filter((s) => typeof s === 'string')
+        : [];
+      const rateLimitPerMinute =
+        typeof keyObj['rateLimitPerMinute'] === 'number' ? keyObj['rateLimitPerMinute'] : undefined;
+      const enabled = typeof keyObj['enabled'] === 'boolean' ? keyObj['enabled'] : true;
+
+      return { key, name, allowedApis, rateLimitPerMinute, enabled };
+    });
+  }
+
+  private parseRecord(value: unknown): Record<string, string> | undefined {
+    if (typeof value !== 'object' || value === null) {
+      return undefined;
+    }
+    const result: Record<string, string> = {};
+    const obj = value as Record<string, unknown>;
+    for (const k of Object.keys(obj)) {
+      const v = obj[k];
+      if (typeof v === 'string') {
+        result[k] = v;
+      } else if (v !== undefined && v !== null) {
+        result[k] = String(v);
+      }
+    }
+    return Object.keys(result).length > 0 ? result : undefined;
+  }
+
+  private validateConfig(config: AppConfig): void {
+    const errors: string[] = [];
+
+    if (config.apiSources.length === 0) {
+      errors.push('至少需要配置一个 API 源');
+    }
+
+    const sourceIds = new Set<string>();
+    for (const source of config.apiSources) {
+      if (sourceIds.has(source.id)) {
+        errors.push(`API 源 ID 重复: ${source.id}`);
+      }
+      sourceIds.add(source.id);
+
+      if (!source.baseUrl) {
+        errors.push(`API 源 ${source.id} 缺少 baseUrl`);
+      }
+    }
+
+    const apiKeys = new Set<string>();
+    for (const key of config.apiKeys) {
+      if (!key.key) {
+        errors.push('存在空的 API Key');
+        continue;
+      }
+      if (apiKeys.has(key.key)) {
+        errors.push(`API Key 重复: ${key.key}`);
+      }
+      apiKeys.add(key.key);
+
+      for (const apiId of key.allowedApis) {
+        if (!sourceIds.has(apiId)) {
+          errors.push(`API Key ${key.key} 引用了不存在的 API 源: ${apiId}`);
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`配置校验失败:\n${errors.map((e) => `  - ${e}`).join('\n')}`);
+    }
+  }
+}

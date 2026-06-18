@@ -1,0 +1,63 @@
+server:
+  port: 3000
+  host: "0.0.0.0"
+  requestIdHeader: "X-Request-Id"
+  apiKeyHeader: "X-API-Key"
+
+apiSources:
+  - id: "weather"
+    name: "天气服务"
+    baseUrl: "https://api.open-meteo.com"
+    endpoint: "v1/forecast"
+    timeoutMs: 5000
+    retry:
+      maxRetries: 2
+      delayMs: 300
+    queryParams:
+      current_weather: "true"
+    enabled: true
+
+  - id: "exchange"
+    name: "汇率服务"
+    baseUrl: "https://api.frankfurter.app"
+    endpoint: "latest"
+    timeoutMs: 5000
+    retry:
+      maxRetries: 2
+      delayMs: 300
+    enabled: true
+
+  - id: "news"
+    name: "新闻服务"
+    baseUrl: "https://newsapi.org"
+    endpoint: "v2/top-headlines"
+    timeoutMs: 8000
+    retry:
+      maxRetries: 3
+      delayMs: 500
+    headers:
+      User-Agent: "Juqiao-Gateway/1.0"
+    enabled: true
+
+apiKeys:
+  - key: "admin-key-0000000000000000000000000000000000000001"
+    name: "管理员Key"
+    allowedApis:
+      - "*"
+    rateLimitPerMinute: 1000
+    enabled: true
+
+  - key: "weather-only-00000000000000000000000000000000000001"
+    name: "天气专用Key"
+    allowedApis:
+      - "weather"
+    rateLimitPerMinute: 60
+    enabled: true
+
+  - key: "finance-key-000000000000000000000000000000000000001"
+    name: "金融Key"
+    allowedApis:
+      - "weather"
+      - "exchange"
+    rateLimitPerMinute: 120
+    enabled: true
