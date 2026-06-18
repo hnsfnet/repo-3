@@ -6,22 +6,16 @@ interface PerKeyWindow {
   limit: number;
 }
 
-interface GlobalQpsBucket {
-  second: number;
-  count: number;
-}
-
 export class RateLimitService {
   private static instance: RateLimitService | null = null;
   private config: RateLimitConfig;
   private perKeyWindows: Map<string, PerKeyWindow>;
-  private globalQpsBuckets: GlobalQpsBucket[];
-  private readonly maxGlobalBuckets = 5;
+  private globalTimestamps: number[];
 
   private constructor() {
     this.config = ConfigLoader.getInstance().getRateLimitConfig();
     this.perKeyWindows = new Map<string, PerKeyWindow>();
-    this.globalQpsBuckets = [];
+    this.globalTimestamps = [];
   }
 
   public static getInstance(): RateLimitService {
@@ -64,11 +58,11 @@ export class RateLimitService {
       window.limit = limit;
     }
 
-    window.timestamps = window.timestamps.filter((ts) => ts > windowStart);
+    window.timestamps = window.timestamps.filter((ts) => ts >= windowStart);
 
     if (window.timestamps.length >= limit) {
       const oldestInWindow = window.timestamps[0] as number;
-      const resetMs = oldestInWindow + windowSize - now;
+      const resetMs = oldestInWindow - windowStart + 1;
       return {
         allowed: false,
         remaining: 0,
@@ -84,7 +78,7 @@ export class RateLimitService {
       allowed: true,
       remaining: limit - window.timestamps.length,
       limit,
-      resetMs: windowStart + windowSize - now,
+      resetMs: Math.max(windowStart + windowSize - now, 0),
     };
   }
 
@@ -98,25 +92,26 @@ export class RateLimitService {
     }
 
     const now = Date.now();
-    const currentSecond = Math.floor(now / 1000);
+    const oneSecondAgo = now - 1000;
 
-    this.globalQpsBuckets = this.globalQpsBuckets.filter(
-      (b) => currentSecond - b.second < this.maxGlobalBuckets,
-    );
+    this.globalTimestamps = this.globalTimestamps.filter((ts) => ts >= oneSecondAgo);
 
-    let currentBucket = this.globalQpsBuckets.find((b) => b.second === currentSecond);
-    if (!currentBucket) {
-      currentBucket = { second: currentSecond, count: 0 };
-      this.globalQpsBuckets.push(currentBucket);
-    }
-
-    currentBucket.count++;
-
+    const currentQps = this.globalTimestamps.length;
     const limit = this.config.globalQpsLimit;
 
+    if (currentQps >= limit) {
+      return {
+        allowed: false,
+        currentQps,
+        limit,
+      };
+    }
+
+    this.globalTimestamps.push(now);
+
     return {
-      allowed: currentBucket.count <= limit,
-      currentQps: currentBucket.count,
+      allowed: true,
+      currentQps: currentQps + 1,
       limit,
     };
   }
@@ -132,7 +127,7 @@ export class RateLimitService {
     if (!window) {
       return limit;
     }
-    const validTimestamps = window.timestamps.filter((ts) => ts > windowStart);
+    const validTimestamps = window.timestamps.filter((ts) => ts >= windowStart);
     return Math.max(0, limit - validTimestamps.length);
   }
 
@@ -142,24 +137,22 @@ export class RateLimitService {
     let removed = 0;
 
     for (const [apiKey, window] of this.perKeyWindows.entries()) {
-      window.timestamps = window.timestamps.filter((ts) => ts > windowStart);
+      window.timestamps = window.timestamps.filter((ts) => ts >= windowStart);
       if (window.timestamps.length === 0) {
         this.perKeyWindows.delete(apiKey);
         removed++;
       }
     }
 
-    const currentSecond = Math.floor(now / 1000);
-    this.globalQpsBuckets = this.globalQpsBuckets.filter(
-      (b) => currentSecond - b.second < this.maxGlobalBuckets,
-    );
+    const oneSecondAgo = now - 1000;
+    this.globalTimestamps = this.globalTimestamps.filter((ts) => ts >= oneSecondAgo);
 
     return removed;
   }
 
   public getStats(): {
     activeKeys: number;
-    globalQpsBuckets: number;
+    globalTimestampsCount: number;
     totalRequestsInWindows: number;
   } {
     let total = 0;
@@ -168,7 +161,7 @@ export class RateLimitService {
     }
     return {
       activeKeys: this.perKeyWindows.size,
-      globalQpsBuckets: this.globalQpsBuckets.length,
+      globalTimestampsCount: this.globalTimestamps.length,
       totalRequestsInWindows: total,
     };
   }

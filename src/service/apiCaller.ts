@@ -2,15 +2,25 @@ import axios, { AxiosError, AxiosRequestConfig } from 'axios';
 import type { ApiSource, SourceResult } from '../types';
 import { CacheService } from './cache';
 
+interface PendingRequest {
+  promise: Promise<SourceResult>;
+  resolve: (result: SourceResult) => void;
+  reject: (error: unknown) => void;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const MAX_WAIT_MS = 30000;
+
 export class ApiCallerService {
   private cache: CacheService;
+  private pendingRequests: Map<string, PendingRequest>;
 
   constructor() {
     this.cache = CacheService.getInstance();
+    this.pendingRequests = new Map<string, PendingRequest>();
   }
 
   public async callSource(
@@ -19,11 +29,67 @@ export class ApiCallerService {
   ): Promise<SourceResult> {
     const cacheKey = this.buildCacheKey(source.id, params);
 
+    const pending = this.pendingRequests.get(cacheKey);
+    if (pending) {
+      return this.waitForPendingResult(source, cacheKey, pending.promise);
+    }
+
+    return this.executeAsLeader(source, cacheKey, params);
+  }
+
+  private async waitForPendingResult(
+    source: ApiSource,
+    cacheKey: string,
+    pendingPromise: Promise<SourceResult>,
+  ): Promise<SourceResult> {
+    const startWait = Date.now();
+
+    try {
+      const result = await Promise.race([
+        pendingPromise,
+        this.createWaitTimeout(startWait),
+      ]);
+      return result;
+    } catch {
+      return this.buildDegradedFromCache(source, cacheKey, '等待上游请求超时');
+    }
+  }
+
+  private createWaitTimeout(startWait: number): Promise<never> {
+    return new Promise<never>((_resolve, reject) => {
+      const remaining = MAX_WAIT_MS - (Date.now() - startWait);
+      if (remaining <= 0) {
+        reject(new Error('wait_timeout'));
+        return;
+      }
+      setTimeout(() => reject(new Error('wait_timeout')), remaining);
+    });
+  }
+
+  private async executeAsLeader(
+    source: ApiSource,
+    cacheKey: string,
+    params: Record<string, unknown>,
+  ): Promise<SourceResult> {
+    let resolveFunc: (result: SourceResult) => void;
+    let rejectFunc: (error: unknown) => void;
+
+    const promise = new Promise<SourceResult>((resolve, reject) => {
+      resolveFunc = resolve;
+      rejectFunc = reject;
+    });
+
+    this.pendingRequests.set(cacheKey, {
+      promise,
+      resolve: resolveFunc!,
+      reject: rejectFunc!,
+    });
+
     try {
       const data = await this.executeWithRetry(source, params);
       this.cache.set(cacheKey, data);
 
-      return {
+      const result: SourceResult = {
         sourceId: source.id,
         sourceName: source.name,
         success: true,
@@ -31,9 +97,51 @@ export class ApiCallerService {
         data,
         timestamp: Date.now(),
       };
+
+      this.resolvePending(cacheKey, result);
+      return result;
     } catch (error) {
-      return this.buildDegradedResult(source, cacheKey, error);
+      const result = this.buildDegradedResult(source, cacheKey, error);
+      this.resolvePending(cacheKey, result);
+      return result;
     }
+  }
+
+  private resolvePending(cacheKey: string, result: SourceResult): void {
+    const pending = this.pendingRequests.get(cacheKey);
+    if (pending) {
+      pending.resolve(result);
+      this.pendingRequests.delete(cacheKey);
+    }
+  }
+
+  private buildDegradedFromCache(
+    source: ApiSource,
+    cacheKey: string,
+    errorMsg: string,
+  ): SourceResult {
+    const cachedEntry = this.cache.get(cacheKey);
+
+    if (cachedEntry) {
+      return {
+        sourceId: source.id,
+        sourceName: source.name,
+        success: true,
+        fromCache: true,
+        data: cachedEntry.data,
+        error: `降级响应 (原因: ${errorMsg})`,
+        timestamp: cachedEntry.timestamp,
+      };
+    }
+
+    return {
+      sourceId: source.id,
+      sourceName: source.name,
+      success: false,
+      fromCache: false,
+      error: errorMsg,
+      timestamp: Date.now(),
+    };
   }
 
   private async executeWithRetry(

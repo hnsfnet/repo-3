@@ -15,12 +15,16 @@ type ValidLogLevel = (typeof VALID_LOG_LEVELS)[number];
 
 export class ConfigLoader {
   private static instance: ConfigLoader | null = null;
-  private config: AppConfig;
+  private fileConfig: AppConfig;
+  private runtimeApiKeys: ApiKeyConfig[];
+  private runtimeApiSources: ApiSource[];
 
   private constructor(configPath?: string) {
     const resolvedPath = configPath ?? this.getDefaultConfigPath();
-    this.config = this.loadConfig(resolvedPath);
-    this.validateConfig(this.config);
+    this.fileConfig = this.loadConfig(resolvedPath);
+    this.runtimeApiKeys = [];
+    this.runtimeApiSources = [];
+    this.validateConfig(this.getMergedConfig());
   }
 
   public static getInstance(configPath?: string): ConfigLoader {
@@ -35,46 +39,152 @@ export class ConfigLoader {
   }
 
   public getConfig(): AppConfig {
-    return this.config;
+    return this.getMergedConfig();
   }
 
   public getServerConfig(): ServerConfig {
-    return this.config.server;
+    return this.fileConfig.server;
   }
 
   public getRateLimitConfig(): RateLimitConfig {
-    return this.config.rateLimit;
+    return this.fileConfig.rateLimit;
   }
 
   public getLogConfig(): LogConfig {
-    return this.config.log;
+    return this.fileConfig.log;
   }
 
   public getApiSources(): ApiSource[] {
-    return this.config.apiSources;
+    const fileSources = this.fileConfig.apiSources;
+    const runtimeSources = this.runtimeApiSources.filter(
+      (rs) => !fileSources.some((fs) => fs.id === rs.id),
+    );
+    return [...fileSources, ...runtimeSources];
   }
 
   public getEnabledApiSources(): ApiSource[] {
-    return this.config.apiSources.filter((s) => s.enabled);
+    return this.getApiSources().filter((s) => s.enabled);
   }
 
   public getApiSourceById(id: string): ApiSource | undefined {
-    return this.config.apiSources.find((s) => s.id === id);
+    const runtime = this.runtimeApiSources.find((s) => s.id === id);
+    if (runtime) return runtime;
+    return this.fileConfig.apiSources.find((s) => s.id === id);
   }
 
   public getApiKeys(): ApiKeyConfig[] {
-    return this.config.apiKeys;
+    const fileKeys = this.fileConfig.apiKeys;
+    const runtimeKeys = this.runtimeApiKeys.filter(
+      (rk) => !fileKeys.some((fk) => fk.key === rk.key),
+    );
+    return [...fileKeys, ...runtimeKeys];
   }
 
   public getApiKeyByKey(key: string): ApiKeyConfig | undefined {
-    return this.config.apiKeys.find((k) => k.key === key);
+    const runtime = this.runtimeApiKeys.find((k) => k.key === key);
+    if (runtime) return runtime;
+    return this.fileConfig.apiKeys.find((k) => k.key === key);
+  }
+
+  public addRuntimeApiKey(keyConfig: ApiKeyConfig): void {
+    const existing = this.getApiKeyByKey(keyConfig.key);
+    if (existing) {
+      const runtimeIdx = this.runtimeApiKeys.findIndex((k) => k.key === keyConfig.key);
+      if (runtimeIdx >= 0) {
+        this.runtimeApiKeys[runtimeIdx] = keyConfig;
+      } else {
+        const fileIdx = this.fileConfig.apiKeys.findIndex((k) => k.key === keyConfig.key);
+        if (fileIdx >= 0) {
+          this.fileConfig.apiKeys[fileIdx] = keyConfig;
+        }
+      }
+    } else {
+      this.runtimeApiKeys.push(keyConfig);
+    }
+  }
+
+  public removeRuntimeApiKey(key: string): boolean {
+    const idx = this.runtimeApiKeys.findIndex((k) => k.key === key);
+    if (idx >= 0) {
+      this.runtimeApiKeys.splice(idx, 1);
+      return true;
+    }
+    return false;
+  }
+
+  public addRuntimeApiSource(source: ApiSource): void {
+    const existing = this.getApiSourceById(source.id);
+    if (existing) {
+      const runtimeIdx = this.runtimeApiSources.findIndex((s) => s.id === source.id);
+      if (runtimeIdx >= 0) {
+        this.runtimeApiSources[runtimeIdx] = source;
+      } else {
+        const fileIdx = this.fileConfig.apiSources.findIndex((s) => s.id === source.id);
+        if (fileIdx >= 0) {
+          this.fileConfig.apiSources[fileIdx] = source;
+        }
+      }
+    } else {
+      this.runtimeApiSources.push(source);
+    }
+  }
+
+  public removeRuntimeApiSource(id: string): boolean {
+    const idx = this.runtimeApiSources.findIndex((s) => s.id === id);
+    if (idx >= 0) {
+      this.runtimeApiSources.splice(idx, 1);
+      return true;
+    }
+    return false;
+  }
+
+  public getRuntimeApiKeys(): ApiKeyConfig[] {
+    return [...this.runtimeApiKeys];
+  }
+
+  public getRuntimeApiSources(): ApiSource[] {
+    return [...this.runtimeApiSources];
   }
 
   public reload(configPath?: string): void {
     const resolvedPath = configPath ?? this.getDefaultConfigPath();
-    const newConfig = this.loadConfig(resolvedPath);
-    this.validateConfig(newConfig);
-    this.config = newConfig;
+    const newFileConfig = this.loadConfig(resolvedPath);
+    this.validateConfig(this.buildMergedConfig(newFileConfig));
+    this.fileConfig = newFileConfig;
+    this.runtimeApiSources = this.runtimeApiSources.filter(
+      (rs) => !newFileConfig.apiSources.some((fs) => fs.id === rs.id),
+    );
+    this.runtimeApiKeys = this.runtimeApiKeys.filter(
+      (rk) => !newFileConfig.apiKeys.some((fk) => fk.key === rk.key),
+    );
+  }
+
+  private getMergedConfig(): AppConfig {
+    return this.buildMergedConfig(this.fileConfig);
+  }
+
+  private buildMergedConfig(fileConfig: AppConfig): AppConfig {
+    const mergedApiSources = [
+      ...fileConfig.apiSources,
+      ...this.runtimeApiSources.filter(
+        (rs) => !fileConfig.apiSources.some((fs) => fs.id === rs.id),
+      ),
+    ];
+
+    const mergedApiKeys = [
+      ...fileConfig.apiKeys,
+      ...this.runtimeApiKeys.filter(
+        (rk) => !fileConfig.apiKeys.some((fk) => fk.key === rk.key),
+      ),
+    ];
+
+    return {
+      server: fileConfig.server,
+      rateLimit: fileConfig.rateLimit,
+      log: fileConfig.log,
+      apiSources: mergedApiSources,
+      apiKeys: mergedApiKeys,
+    };
   }
 
   private getDefaultConfigPath(): string {

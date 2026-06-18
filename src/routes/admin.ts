@@ -5,7 +5,8 @@ import { LoggerService } from '../service/logger';
 import { CacheService } from '../service/cache';
 import { ConfigLoader } from '../config/loader';
 import { getKeyConfigFromRequest } from '../middleware/auth';
-import { sendSuccess, sendForbidden, sendBadRequest } from '../utils/response';
+import { sendSuccess, sendForbidden, sendBadRequest, sendNotFound } from '../utils/response';
+import type { ApiKeyConfig, ApiSource } from '../types';
 
 const router = Router();
 const stats = StatsService.getInstance();
@@ -143,11 +144,109 @@ router.post('/reload-config', (req: Request, res: Response) => {
     configLoader.reload();
     RateLimitService.reset();
     LoggerService.reset();
-    sendSuccess(req, res, { message: '配置已重新加载' });
+    const runtimeKeys = configLoader.getRuntimeApiKeys();
+    const runtimeSources = configLoader.getRuntimeApiSources();
+    sendSuccess(req, res, {
+      message: '配置已重新加载（运行时配置已保留）',
+      retainedRuntimeKeys: runtimeKeys.length,
+      retainedRuntimeSources: runtimeSources.length,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendBadRequest(req, res, `配置加载失败: ${message}`, 40013);
   }
+});
+
+router.post('/keys', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+
+  const body = req.body as Partial<ApiKeyConfig> | undefined;
+  if (!body || !body.key || typeof body.key !== 'string') {
+    sendBadRequest(req, res, 'key 字段必填', 40014);
+    return;
+  }
+  if (!Array.isArray(body.allowedApis)) {
+    sendBadRequest(req, res, 'allowedApis 必须是数组', 40015);
+    return;
+  }
+
+  const keyConfig: ApiKeyConfig = {
+    key: body.key,
+    name: body.name ?? body.key.slice(0, 8),
+    allowedApis: body.allowedApis,
+    rateLimitPerMinute: body.rateLimitPerMinute,
+    enabled: body.enabled ?? true,
+  };
+
+  configLoader.addRuntimeApiKey(keyConfig);
+  sendSuccess(req, res, { key: keyConfig.key, name: keyConfig.name, runtime: true });
+});
+
+router.delete('/keys/:keyId', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+
+  const keyId = req.params['keyId'];
+  const removed = configLoader.removeRuntimeApiKey(keyId);
+  if (!removed) {
+    sendNotFound(req, res, `运行时 API Key 不存在: ${keyId}`, 40404);
+    return;
+  }
+  sendSuccess(req, res, { removed: keyId });
+});
+
+router.get('/keys/runtime', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+  const runtimeKeys = configLoader.getRuntimeApiKeys().map((k) => ({
+    ...k,
+    key: k.key.slice(0, 8) + '****' + k.key.slice(-4),
+  }));
+  sendSuccess(req, res, runtimeKeys);
+});
+
+router.post('/sources', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+
+  const body = req.body as Partial<ApiSource> | undefined;
+  if (!body || !body.id || typeof body.id !== 'string') {
+    sendBadRequest(req, res, 'id 字段必填', 40016);
+    return;
+  }
+  if (!body.baseUrl || typeof body.baseUrl !== 'string') {
+    sendBadRequest(req, res, 'baseUrl 字段必填', 40017);
+    return;
+  }
+
+  const source: ApiSource = {
+    id: body.id,
+    name: body.name ?? body.id,
+    baseUrl: body.baseUrl,
+    timeoutMs: body.timeoutMs ?? 5000,
+    retry: body.retry ?? { maxRetries: 2, delayMs: 300 },
+    headers: body.headers,
+    queryParams: body.queryParams,
+    endpoint: body.endpoint,
+    enabled: body.enabled ?? true,
+  };
+
+  configLoader.addRuntimeApiSource(source);
+  sendSuccess(req, res, { id: source.id, name: source.name, runtime: true });
+});
+
+router.delete('/sources/:sourceId', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+
+  const sourceId = req.params['sourceId'];
+  const removed = configLoader.removeRuntimeApiSource(sourceId);
+  if (!removed) {
+    sendNotFound(req, res, `运行时 API 源不存在: ${sourceId}`, 40405);
+    return;
+  }
+  sendSuccess(req, res, { removed: sourceId });
+});
+
+router.get('/sources/runtime', (req: Request, res: Response) => {
+  if (!requireAdmin(req, res)) return;
+  sendSuccess(req, res, configLoader.getRuntimeApiSources());
 });
 
 router.get('/cache', (req: Request, res: Response) => {
