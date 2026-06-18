@@ -4,6 +4,14 @@ server:
   requestIdHeader: "X-Request-Id"
   apiKeyHeader: "X-API-Key"
 
+plugins:
+  - name: "auth"
+    enabled: true
+  - name: "rate-limit"
+    enabled: true
+  - name: "logging"
+    enabled: true
+
 rateLimit:
   enabled: true
   globalQpsLimit: 500
@@ -30,6 +38,10 @@ apiSources:
       delayMs: 300
     queryParams:
       current_weather: "true"
+    cache:
+      ttlMs: 600000
+      eviction: "lru"
+      maxEntries: 500
     enabled: true
 
   - id: "exchange"
@@ -40,6 +52,10 @@ apiSources:
     retry:
       maxRetries: 2
       delayMs: 300
+    cache:
+      ttlMs: 300000
+      eviction: "lru"
+      maxEntries: 200
     enabled: true
 
   - id: "news"
@@ -52,6 +68,10 @@ apiSources:
       delayMs: 500
     headers:
       User-Agent: "Juqiao-Gateway/1.0"
+    cache:
+      ttlMs: 180000
+      eviction: "fifo"
+      maxEntries: 300
     enabled: true
 
 apiKeys:

@@ -3,7 +3,7 @@ import { AggregatorService } from '../service/aggregator';
 import { getKeyConfigFromRequest } from '../middleware/auth';
 import { sendSuccess, sendBadRequest, sendNotFound } from '../utils/response';
 import { ConfigLoader } from '../config/loader';
-import { CacheService } from '../service/cache';
+import { CacheManager } from '../service/cache';
 import type { AggregateRequest } from '../types';
 
 const router = Router();
@@ -99,18 +99,28 @@ router.get('/sources/:apiId', async (req: Request, res: Response): Promise<void>
 });
 
 router.get('/cache', (req: Request, res: Response) => {
-  const cache = CacheService.getInstance();
+  const cacheManager = CacheManager.getInstance();
+  const defaultStore = cacheManager.getDefaultStore();
+  const storeNames = cacheManager.getStoreNames();
+  const stores: Record<string, { size: number; keys: string[] }> = {};
+  for (const name of storeNames) {
+    const store = cacheManager.getStore(name);
+    if (store) {
+      stores[name] = { size: store.size(), keys: store.keys() };
+    }
+  }
   sendSuccess(req, res, {
-    size: cache.size(),
-    keys: cache.keys(),
+    defaultStore: { size: defaultStore.size(), keys: defaultStore.keys() },
+    stores,
   });
 });
 
 router.delete('/cache', (req: Request, res: Response) => {
-  const cache = CacheService.getInstance();
-  const size = cache.size();
-  cache.clear();
-  sendSuccess(req, res, { cleared: size });
+  const cacheManager = CacheManager.getInstance();
+  const defaultStore = cacheManager.getDefaultStore();
+  const size = defaultStore.size();
+  cacheManager.clearAll();
+  sendSuccess(req, res, { clearedEntries: size });
 });
 
 function extractQueryParams(req: Request): Record<string, unknown> {

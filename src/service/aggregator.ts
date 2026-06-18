@@ -1,7 +1,6 @@
 import type { ApiSource, SourceResult, ApiKeyConfig } from '../types';
 import { ConfigLoader } from '../config/loader';
 import { ApiCallerService } from './apiCaller';
-import { hasApiPermission } from '../middleware/auth';
 
 export interface AggregateOptions {
   apiIds: string[];
@@ -17,6 +16,13 @@ export interface AggregateResult {
     failed: number;
     fromCache: number;
   };
+}
+
+function hasApiPermission(keyConfig: ApiKeyConfig, apiId: string): boolean {
+  if (keyConfig.allowedApis.includes('*')) {
+    return true;
+  }
+  return keyConfig.allowedApis.includes(apiId);
 }
 
 export class AggregatorService {

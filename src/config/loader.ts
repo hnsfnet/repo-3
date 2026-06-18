@@ -8,6 +8,9 @@ import type {
   ServerConfig,
   RateLimitConfig,
   LogConfig,
+  PluginConfig,
+  CachePolicyConfig,
+  CacheEvictionPolicy,
 } from '../types';
 
 const VALID_LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
@@ -52,6 +55,10 @@ export class ConfigLoader {
 
   public getLogConfig(): LogConfig {
     return this.fileConfig.log;
+  }
+
+  public getPluginsConfig(): PluginConfig[] {
+    return this.fileConfig.plugins;
   }
 
   public getApiSources(): ApiSource[] {
@@ -182,6 +189,7 @@ export class ConfigLoader {
       server: fileConfig.server,
       rateLimit: fileConfig.rateLimit,
       log: fileConfig.log,
+      plugins: fileConfig.plugins,
       apiSources: mergedApiSources,
       apiKeys: mergedApiKeys,
     };
@@ -210,10 +218,11 @@ export class ConfigLoader {
     const server = this.parseServerConfig(raw['server'] as Record<string, unknown> | undefined);
     const rateLimit = this.parseRateLimitConfig(raw['rateLimit'] as Record<string, unknown> | undefined);
     const log = this.parseLogConfig(raw['log'] as Record<string, unknown> | undefined);
+    const plugins = this.parsePluginsConfig(raw['plugins'] as unknown[] | undefined);
     const apiSources = this.parseApiSources(raw['apiSources'] as unknown[] | undefined);
     const apiKeys = this.parseApiKeys(raw['apiKeys'] as unknown[] | undefined);
 
-    return { server, rateLimit, log, apiSources, apiKeys };
+    return { server, rateLimit, log, plugins, apiSources, apiKeys };
   }
 
   private parseServerConfig(raw: Record<string, unknown> | undefined): ServerConfig {
@@ -256,6 +265,38 @@ export class ConfigLoader {
     return { enabled, level, consoleEnabled, fileEnabled, logDir, maxFileSizeMb, maxFiles };
   }
 
+  private parsePluginsConfig(raw: unknown[] | undefined): PluginConfig[] {
+    if (!Array.isArray(raw)) {
+      return [
+        { name: 'auth', enabled: true },
+        { name: 'rate-limit', enabled: true },
+        { name: 'logging', enabled: true },
+      ];
+    }
+
+    return raw.map((item) => {
+      const obj = item as Record<string, unknown>;
+      const name = typeof obj['name'] === 'string' ? obj['name'] : '';
+      const enabled = typeof obj['enabled'] === 'boolean' ? obj['enabled'] : true;
+      const options = typeof obj['options'] === 'object' && obj['options'] !== null
+        ? (obj['options'] as Record<string, unknown>)
+        : undefined;
+      return { name, enabled, options };
+    }).filter((p) => p.name.length > 0);
+  }
+
+  private parseCachePolicy(raw: Record<string, unknown> | undefined): CachePolicyConfig | undefined {
+    if (!raw) return undefined;
+    const ttlMs = typeof raw['ttlMs'] === 'number' ? raw['ttlMs'] : 300000;
+    const evictionRaw = typeof raw['eviction'] === 'string' ? raw['eviction'] : 'lru';
+    const validEvictions: CacheEvictionPolicy[] = ['lru', 'lfu', 'fifo'];
+    const eviction = validEvictions.includes(evictionRaw as CacheEvictionPolicy)
+      ? (evictionRaw as CacheEvictionPolicy)
+      : 'lru';
+    const maxEntries = typeof raw['maxEntries'] === 'number' ? raw['maxEntries'] : 1000;
+    return { ttlMs, eviction, maxEntries };
+  }
+
   private parseApiSources(raw: unknown[] | undefined): ApiSource[] {
     if (!Array.isArray(raw)) {
       return [];
@@ -278,8 +319,10 @@ export class ConfigLoader {
       const headers = this.parseRecord(source['headers']);
       const queryParams = this.parseRecord(source['queryParams']);
       const endpoint = typeof source['endpoint'] === 'string' ? source['endpoint'] : undefined;
+      const cache = this.parseCachePolicy(source['cache'] as Record<string, unknown> | undefined);
+      const adapter = typeof source['adapter'] === 'string' ? source['adapter'] : undefined;
 
-      return { id, name, baseUrl, timeoutMs, retry, headers, queryParams, endpoint, enabled };
+      return { id, name, baseUrl, timeoutMs, retry, headers, queryParams, endpoint, enabled, cache, adapter };
     });
   }
 

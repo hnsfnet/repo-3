@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { StatsService } from '../service/stats';
 import { RateLimitService } from '../service/rateLimit';
 import { LoggerService } from '../service/logger';
-import { CacheService } from '../service/cache';
+import { CacheManager } from '../service/cache';
 import { ConfigLoader } from '../config/loader';
 import { getKeyConfigFromRequest } from '../middleware/auth';
 import { sendSuccess, sendForbidden, sendBadRequest, sendNotFound } from '../utils/response';
@@ -12,7 +12,7 @@ const router = Router();
 const stats = StatsService.getInstance();
 const rateLimit = RateLimitService.getInstance();
 const logger = LoggerService.getInstance();
-const cache = CacheService.getInstance();
+const cacheManager = CacheManager.getInstance();
 const configLoader = ConfigLoader.getInstance();
 
 function requireAdmin(req: Request, res: Response): boolean {
@@ -252,23 +252,33 @@ router.get('/sources/runtime', (req: Request, res: Response) => {
 router.get('/cache', (req: Request, res: Response) => {
   if (!requireAdmin(req, res)) return;
 
-  const keys = cache.keys();
+  const defaultStore = cacheManager.getDefaultStore();
+  const keys = defaultStore.keys();
   const entries = keys.map((k) => ({
     key: k,
-    info: cache.getEntryInfo(k),
+    info: defaultStore.getEntryInfo(k),
   }));
+  const storeNames = cacheManager.getStoreNames();
+  const storesInfo: Record<string, unknown> = {};
+  for (const name of storeNames) {
+    const store = cacheManager.getStore(name);
+    if (store) {
+      storesInfo[name] = { size: store.size(), keys: store.keys() };
+    }
+  }
 
   sendSuccess(req, res, {
-    size: cache.size(),
-    entries,
+    defaultStore: { size: defaultStore.size(), entries },
+    stores: storesInfo,
   });
 });
 
 router.delete('/cache', (req: Request, res: Response) => {
   if (!requireAdmin(req, res)) return;
 
-  const size = cache.size();
-  cache.clear();
+  const defaultStore = cacheManager.getDefaultStore();
+  const size = defaultStore.size();
+  cacheManager.clearAll();
   sendSuccess(req, res, { clearedEntries: size });
 });
 
