@@ -4,6 +4,21 @@ server:
   requestIdHeader: "X-Request-Id"
   apiKeyHeader: "X-API-Key"
 
+rateLimit:
+  enabled: true
+  globalQpsLimit: 500
+  defaultPerKeyPerMinute: 60
+  windowSizeMs: 60000
+
+log:
+  enabled: true
+  level: "info"
+  consoleEnabled: true
+  fileEnabled: true
+  logDir: "logs"
+  maxFileSizeMb: 50
+  maxFiles: 30
+
 apiSources:
   - id: "weather"
     name: "天气服务"

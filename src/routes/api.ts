@@ -55,6 +55,11 @@ router.post('/aggregate', async (req: Request, res: Response): Promise<void> => 
     keyConfig,
   });
 
+  const cacheHitCount = result.results.filter((r) => r.fromCache).length;
+  if (cacheHitCount > 0) {
+    (req as Record<string, unknown>)['cacheHitCount'] = cacheHitCount;
+  }
+
   sendSuccess(req, res, result);
 });
 
@@ -84,6 +89,10 @@ router.get('/sources/:apiId', async (req: Request, res: Response): Promise<void>
   if (result === null) {
     sendNotFound(req, res, `无法访问 API 源: ${apiId}`, 40403);
     return;
+  }
+
+  if (result.fromCache) {
+    (req as Record<string, unknown>)['cacheHitCount'] = 1;
   }
 
   sendSuccess(req, res, result);

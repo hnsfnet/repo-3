@@ -1,7 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import type { AppConfig, ApiSource, ApiKeyConfig, ServerConfig } from '../types';
+import type {
+  AppConfig,
+  ApiSource,
+  ApiKeyConfig,
+  ServerConfig,
+  RateLimitConfig,
+  LogConfig,
+} from '../types';
+
+const VALID_LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
+type ValidLogLevel = (typeof VALID_LOG_LEVELS)[number];
 
 export class ConfigLoader {
   private static instance: ConfigLoader | null = null;
@@ -30,6 +40,14 @@ export class ConfigLoader {
 
   public getServerConfig(): ServerConfig {
     return this.config.server;
+  }
+
+  public getRateLimitConfig(): RateLimitConfig {
+    return this.config.rateLimit;
+  }
+
+  public getLogConfig(): LogConfig {
+    return this.config.log;
   }
 
   public getApiSources(): ApiSource[] {
@@ -80,23 +98,52 @@ export class ConfigLoader {
 
   private parseConfig(raw: Record<string, unknown>): AppConfig {
     const server = this.parseServerConfig(raw['server'] as Record<string, unknown> | undefined);
+    const rateLimit = this.parseRateLimitConfig(raw['rateLimit'] as Record<string, unknown> | undefined);
+    const log = this.parseLogConfig(raw['log'] as Record<string, unknown> | undefined);
     const apiSources = this.parseApiSources(raw['apiSources'] as unknown[] | undefined);
     const apiKeys = this.parseApiKeys(raw['apiKeys'] as unknown[] | undefined);
 
-    return { server, apiSources, apiKeys };
+    return { server, rateLimit, log, apiSources, apiKeys };
   }
 
   private parseServerConfig(raw: Record<string, unknown> | undefined): ServerConfig {
     const port = typeof raw?.['port'] === 'number' ? raw['port'] : 3000;
     const host = typeof raw?.['host'] === 'string' ? raw['host'] : '0.0.0.0';
-    const requestIdHeader = typeof raw?.['requestIdHeader'] === 'string'
-      ? raw['requestIdHeader']
-      : 'X-Request-Id';
-    const apiKeyHeader = typeof raw?.['apiKeyHeader'] === 'string'
-      ? raw['apiKeyHeader']
-      : 'X-API-Key';
+    const requestIdHeader =
+      typeof raw?.['requestIdHeader'] === 'string' ? raw['requestIdHeader'] : 'X-Request-Id';
+    const apiKeyHeader =
+      typeof raw?.['apiKeyHeader'] === 'string' ? raw['apiKeyHeader'] : 'X-API-Key';
 
     return { port, host, requestIdHeader, apiKeyHeader };
+  }
+
+  private parseRateLimitConfig(raw: Record<string, unknown> | undefined): RateLimitConfig {
+    const enabled = typeof raw?.['enabled'] === 'boolean' ? raw['enabled'] : true;
+    const globalQpsLimit = typeof raw?.['globalQpsLimit'] === 'number' ? raw['globalQpsLimit'] : 500;
+    const defaultPerKeyPerMinute =
+      typeof raw?.['defaultPerKeyPerMinute'] === 'number' ? raw['defaultPerKeyPerMinute'] : 60;
+    const windowSizeMs =
+      typeof raw?.['windowSizeMs'] === 'number' ? raw['windowSizeMs'] : 60000;
+
+    return { enabled, globalQpsLimit, defaultPerKeyPerMinute, windowSizeMs };
+  }
+
+  private parseLogConfig(raw: Record<string, unknown> | undefined): LogConfig {
+    const enabled = typeof raw?.['enabled'] === 'boolean' ? raw['enabled'] : true;
+    const levelRaw = raw?.['level'];
+    const level: ValidLogLevel =
+      typeof levelRaw === 'string' && VALID_LOG_LEVELS.includes(levelRaw as ValidLogLevel)
+        ? (levelRaw as ValidLogLevel)
+        : 'info';
+    const consoleEnabled =
+      typeof raw?.['consoleEnabled'] === 'boolean' ? raw['consoleEnabled'] : true;
+    const fileEnabled = typeof raw?.['fileEnabled'] === 'boolean' ? raw['fileEnabled'] : true;
+    const logDir = typeof raw?.['logDir'] === 'string' ? raw['logDir'] : 'logs';
+    const maxFileSizeMb =
+      typeof raw?.['maxFileSizeMb'] === 'number' ? raw['maxFileSizeMb'] : 50;
+    const maxFiles = typeof raw?.['maxFiles'] === 'number' ? raw['maxFiles'] : 30;
+
+    return { enabled, level, consoleEnabled, fileEnabled, logDir, maxFileSizeMb, maxFiles };
   }
 
   private parseApiSources(raw: unknown[] | undefined): ApiSource[] {
@@ -166,6 +213,23 @@ export class ConfigLoader {
   private validateConfig(config: AppConfig): void {
     const errors: string[] = [];
 
+    if (config.rateLimit.globalQpsLimit <= 0) {
+      errors.push('全局限流 globalQpsLimit 必须大于 0');
+    }
+    if (config.rateLimit.defaultPerKeyPerMinute <= 0) {
+      errors.push('默认限流 defaultPerKeyPerMinute 必须大于 0');
+    }
+    if (config.rateLimit.windowSizeMs <= 0) {
+      errors.push('限流窗口 windowSizeMs 必须大于 0');
+    }
+
+    if (config.log.maxFileSizeMb <= 0) {
+      errors.push('日志文件大小 maxFileSizeMb 必须大于 0');
+    }
+    if (config.log.maxFiles <= 0) {
+      errors.push('日志保留数量 maxFiles 必须大于 0');
+    }
+
     if (config.apiSources.length === 0) {
       errors.push('至少需要配置一个 API 源');
     }
@@ -193,8 +257,12 @@ export class ConfigLoader {
       }
       apiKeys.add(key.key);
 
+      if (key.rateLimitPerMinute !== undefined && key.rateLimitPerMinute <= 0) {
+        errors.push(`API Key ${key.key} 的 rateLimitPerMinute 必须大于 0`);
+      }
+
       for (const apiId of key.allowedApis) {
-        if (!sourceIds.has(apiId)) {
+        if (apiId !== '*' && !sourceIds.has(apiId)) {
           errors.push(`API Key ${key.key} 引用了不存在的 API 源: ${apiId}`);
         }
       }

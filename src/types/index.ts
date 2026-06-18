@@ -32,8 +32,27 @@ export interface ServerConfig {
   apiKeyHeader: string;
 }
 
+export interface RateLimitConfig {
+  enabled: boolean;
+  globalQpsLimit: number;
+  defaultPerKeyPerMinute: number;
+  windowSizeMs: number;
+}
+
+export interface LogConfig {
+  enabled: boolean;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  consoleEnabled: boolean;
+  fileEnabled: boolean;
+  logDir: string;
+  maxFileSizeMb: number;
+  maxFiles: number;
+}
+
 export interface AppConfig {
   server: ServerConfig;
+  rateLimit: RateLimitConfig;
+  log: LogConfig;
   apiSources: ApiSource[];
   apiKeys: ApiKeyConfig[];
 }
@@ -69,4 +88,81 @@ export interface AuthenticatedRequest extends ExpressRequest {
   apiKey?: string;
   keyConfig?: ApiKeyConfig;
   requestId?: string;
+  startTime?: number;
+  cacheHitCount?: number;
+}
+
+export interface RateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  limit: number;
+  resetMs: number;
+  retryAfterMs?: number;
+}
+
+export interface GlobalRateLimitResult {
+  allowed: boolean;
+  currentQps: number;
+  limit: number;
+}
+
+export interface AccessLogEntry {
+  timestamp: number;
+  date: string;
+  requestId: string;
+  apiKey: string;
+  keyName: string;
+  method: string;
+  path: string;
+  statusCode: number;
+  durationMs: number;
+  cacheHit: boolean;
+  cacheHitCount: number;
+  error?: string;
+  userAgent?: string;
+  clientIp?: string;
+}
+
+export interface HourlyStatsKey {
+  date: string;
+  hour: number;
+}
+
+export interface PerKeyStats {
+  totalCalls: number;
+  successCalls: number;
+  errorCalls: number;
+  totalDurationMs: number;
+  maxDurationMs: number;
+  minDurationMs: number;
+  cacheHits: number;
+}
+
+export interface EndpointCallRecord {
+  method: string;
+  path: string;
+  durationMs: number;
+  timestamp: number;
+  apiKey: string;
+  statusCode: number;
+}
+
+export interface StatsSummary {
+  period: {
+    from: number;
+    to: number;
+  };
+  totalCalls: number;
+  totalSuccess: number;
+  totalError: number;
+  errorRate: number;
+  avgResponseMs: number;
+  p95ResponseMs: number;
+  perKey: Record<string, {
+    keyName: string;
+    totalCalls: number;
+    errorRate: number;
+    avgResponseMs: number;
+  }>;
+  slowestTop10: EndpointCallRecord[];
 }
